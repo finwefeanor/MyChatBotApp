@@ -1,0 +1,12 @@
+# Ignore virtual env
+.venv/
+
+# Ignore Python caches
+__pycache__/
+*.pyc
+
+# Ignore Streamlit secrets (never share API keys)
+.streamlit/secrets.toml
+
+# Ignore dotenv if used
+.env
