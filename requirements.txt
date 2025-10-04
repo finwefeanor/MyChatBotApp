@@ -1,4 +1,9 @@
-streamlit>=1.40
-openai>=1.0.0
-pypdf>=4.2.0
-numpy>=1.26
+streamlit==1.37.1
+openai>=1.37.0
+python-dotenv>=1.0.1
+langchain==0.2.9
+langchain-community==0.2.7
+langchain-openai==0.1.17
+chromadb==0.5.3
+pypdf==4.2.0
+numpy==1.26.4
