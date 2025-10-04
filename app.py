@@ -1,17 +1,20 @@
 import os
 import io
-import math
 import numpy as np
 import streamlit as st
 from openai import OpenAI
 from pypdf import PdfReader
+from time import sleep
 
 st.set_page_config(page_title="Chat + PDF Q&A", page_icon="📄")
 
+# ---------- OpenAI client ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY", "")
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
+# ---------- Helpers ----------
 def chunk_text(text: str, chunk_chars=1000, overlap=200):
+    """Split text into overlapping character chunks."""
     text = " ".join(text.split())  # collapse whitespace
     chunks = []
     i = 0
@@ -26,34 +29,47 @@ def chunk_text(text: str, chunk_chars=1000, overlap=200):
             break
     return chunks
 
-def embed_texts(texts, batch_size=100):
-    # Returns L2-normalized embeddings of shape (n, d)
+def embed_texts(texts, batch_size=100, retries=3):
+    """Embed texts with batching + retries, return L2-normalized vectors."""
     all_vecs = []
     pbar = st.progress(0) if len(texts) > batch_size else None
     total = len(texts)
+    done = 0
     for i in range(0, total, batch_size):
         batch = texts[i:i+batch_size]
-        resp = client.embeddings.create(model="text-embedding-3-small", input=batch)
-        vecs = np.array([e.embedding for e in resp.data], dtype=np.float32)
-        all_vecs.append(vecs)
-        if pbar:
-            pbar.progress(min(1.0, (i+len(batch))/total))
+        for attempt in range(retries):
+            try:
+                resp = client.embeddings.create(model="text-embedding-3-small", input=batch)
+                vecs = np.array([e.embedding for e in resp.data], dtype=np.float32)
+                all_vecs.append(vecs)
+                done += len(batch)
+                if pbar:
+                    pbar.progress(done / total)
+                break
+            except Exception:
+                if attempt == retries - 1:
+                    raise
+                sleep(1 + attempt)  # backoff & retry
     arr = np.vstack(all_vecs)
     norms = np.linalg.norm(arr, axis=1, keepdims=True) + 1e-10
     return arr / norms
 
 def cosine_top_k(query_vec, doc_matrix, k=5):
-    # doc_matrix and query_vec should be L2-normalized
-    sims = doc_matrix @ query_vec
+    """Return indices + scores of top-k most similar vectors."""
+    sims = doc_matrix @ query_vec  # doc_matrix (n,d), query_vec (d,)
+    k = min(k, sims.shape[0])
     idx = np.argsort(-sims)[:k]
     return idx, sims[idx]
 
 def extract_pdf_text(uploaded_files):
+    """Extract plain text from uploaded PDFs."""
     full_texts = []
     for file in uploaded_files:
         reader = PdfReader(io.BytesIO(file.read()))
         pages = [p.extract_text() or "" for p in reader.pages]
-        full_texts.append("\n".join(pages))
+        # optional cleanup (remove repeated headers/footers)
+        text = "\n".join(pages).replace("Unity Programmer Task", "")
+        full_texts.append(text)
     return "\n\n".join(full_texts)
 
 # ---------- UI ----------
@@ -91,33 +107,31 @@ with tab1:
 
 # ====== PDF Q&A tab ======
 with tab2:
-    st.write("Upload a PDF (or a few), then ask questions. I’ll search the document and answer using the most relevant parts.")
+    st.write("Upload a PDF (or multiple), then ask questions. I’ll search and answer from the document.")
+
     uploaded = st.file_uploader("Upload PDF(s)", type=["pdf"], accept_multiple_files=True)
     colA, colB = st.columns(2)
     with colA:
-        chunk_chars = st.slider("Chunk size (chars)", 500, 2000, 1000, 100)
+        chunk_chars = st.slider("Chunk size (chars)", 500, 4000, 1000, 100)
     with colB:
         top_k = st.slider("Top-K chunks", 2, 10, 5)
 
     if "rag_state" not in st.session_state:
-        st.session_state.rag_state = {
-            "doc_chunks": [],
-            "doc_vectors": None
-        }
+        st.session_state.rag_state = {"doc_chunks": [], "doc_vectors": None}
 
     if uploaded and client:
         if st.button("Build index"):
             with st.spinner("Reading & embedding..."):
                 text = extract_pdf_text(uploaded)
-if not text.strip():
-    st.error("Couldn't extract text from the PDF(s). Are they scanned images?")
-    st.stop()
+                if not text.strip():
+                    st.error("No text could be extracted. Are these scanned PDFs?")
+                    st.stop()
                 chunks = chunk_text(text, chunk_chars=chunk_chars, overlap=200)
-                # limit to prevent accidental huge PDFs
-                max_chunks = 300  # ~1.2M chars worst case; adjust as needed
+                st.write(f"Preparing {len(chunks)} chunks…")
+                max_chunks = 300
                 if len(chunks) > max_chunks:
                     chunks = chunks[:max_chunks]
-                    st.warning(f"Too large; using first {max_chunks} chunks.")
+                    st.warning(f"Too large; only using first {max_chunks} chunks.")
                 vecs = embed_texts(chunks)
                 st.session_state.rag_state["doc_chunks"] = chunks
                 st.session_state.rag_state["doc_vectors"] = vecs
@@ -127,9 +141,8 @@ if not text.strip():
         q = st.text_input("Your question about the PDF(s)")
         if q and client:
             with st.spinner("Searching..."):
-                qv = embed_texts([q])[0]  # normalized single vector
-                k = min(int(top_k), len(st.session_state.rag_state["doc_chunks"]))
-                idx, sims = cosine_top_k(qv, st.session_state.rag_state["doc_vectors"], k=k)
+                qv = embed_texts([q])[0]  # (d,)
+                idx, sims = cosine_top_k(qv, st.session_state.rag_state["doc_vectors"], k=top_k)
                 context_parts = [st.session_state.rag_state["doc_chunks"][int(i)] for i in idx]
                 context = "\n\n---\n\n".join(context_parts)
 
@@ -161,4 +174,4 @@ if not text.strip():
             except Exception as e:
                 st.error(f"Error: {e}")
     elif uploaded and not client:
-        st.error("No OPENAI_API_KEY set. Add it to secrets to build the index.")
+        st.error("No OPENAI_API_KEY set. Add it in Settings → Secrets to build the index.")
