@@ -34,26 +34,52 @@ def chunk_text(text: str, chunk_chars=1000, overlap=200):
             break
     return chunks
 
-def embed_texts(texts, batch=16, retries=3):
-    """Embed texts with batching and retry; return L2-normalized vectors (n,d)."""
+def embed_texts(texts, batch=8, retries=3, timeout=30):
+    """
+    Requests-based embeddings to avoid SDK/runtime crashes.
+    Returns L2-normalized numpy array of shape (n, d).
+    """
+    if not OPENAI_API_KEY:
+        st.error("OPENAI_API_KEY missing.")
+        st.stop()
+
+    url = "https://api.openai.com/v1/embeddings"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
     all_vecs = []
-    total = len(texts); done = 0
+    total = len(texts)
+    done = 0
     pbar = st.progress(0.0) if total > batch else None
+
     for i in range(0, total, batch):
-        b = texts[i:i+batch]
+        chunk = texts[i:i+batch]
+        payload = {
+            "model": "text-embedding-3-small",
+            "input": chunk
+        }
         for attempt in range(retries):
             try:
-                resp = client.embeddings.create(model="text-embedding-3-small", input=b)
-                vecs = np.array([e.embedding for e in resp.data], dtype=np.float32)
+                resp = requests.post(url, headers=headers, data=json.dumps(payload), timeout=timeout)
+                if resp.status_code != 200:
+                    # Show exact API error so we don't get a generic "Oh no"
+                    st.error(f"Embeddings HTTP {resp.status_code}: {resp.text[:500]}")
+                    raise RuntimeError(f"Embeddings HTTP {resp.status_code}")
+                data = resp.json()
+                vecs = np.array([item["embedding"] for item in data["data"]], dtype=np.float32)
                 all_vecs.append(vecs)
-                done += len(b)
+                done += len(chunk)
                 if pbar:
-                    pbar.progress(done/total)
+                    pbar.progress(done / total)
                 break
-            except Exception:
+            except Exception as e:
                 if attempt == retries - 1:
                     raise
-                sleep(1 + attempt)  # simple backoff
+                # brief backoff then retry
+                sleep(1 + attempt)
+
     arr = np.vstack(all_vecs)
     norms = np.linalg.norm(arr, axis=1, keepdims=True) + 1e-10
     return arr / norms
