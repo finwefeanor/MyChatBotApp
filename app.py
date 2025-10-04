@@ -109,9 +109,12 @@ with tab2:
         if st.button("Build index"):
             with st.spinner("Reading & embedding..."):
                 text = extract_pdf_text(uploaded)
+if not text.strip():
+    st.error("Couldn't extract text from the PDF(s). Are they scanned images?")
+    st.stop()
                 chunks = chunk_text(text, chunk_chars=chunk_chars, overlap=200)
                 # limit to prevent accidental huge PDFs
-                max_chunks = 1200  # ~1.2M chars worst case; adjust as needed
+                max_chunks = 300  # ~1.2M chars worst case; adjust as needed
                 if len(chunks) > max_chunks:
                     chunks = chunks[:max_chunks]
                     st.warning(f"Too large; using first {max_chunks} chunks.")
@@ -125,7 +128,8 @@ with tab2:
         if q and client:
             with st.spinner("Searching..."):
                 qv = embed_texts([q])[0]  # normalized single vector
-                idx, sims = cosine_top_k(qv, st.session_state.rag_state["doc_vectors"], k=top_k)
+                k = min(int(top_k), len(st.session_state.rag_state["doc_chunks"]))
+                idx, sims = cosine_top_k(qv, st.session_state.rag_state["doc_vectors"], k=k)
                 context_parts = [st.session_state.rag_state["doc_chunks"][int(i)] for i in idx]
                 context = "\n\n---\n\n".join(context_parts)
 
