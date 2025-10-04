@@ -26,14 +26,19 @@ def chunk_text(text: str, chunk_chars=1000, overlap=200):
             break
     return chunks
 
-def embed_texts(texts):
-    # returns a numpy array of shape (n, d)
-    resp = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=texts
-    )
-    arr = np.array([e.embedding for e in resp.data], dtype=np.float32)
-    # normalize for cosine
+def embed_texts(texts, batch_size=100):
+    # Returns L2-normalized embeddings of shape (n, d)
+    all_vecs = []
+    pbar = st.progress(0) if len(texts) > batch_size else None
+    total = len(texts)
+    for i in range(0, total, batch_size):
+        batch = texts[i:i+batch_size]
+        resp = client.embeddings.create(model="text-embedding-3-small", input=batch)
+        vecs = np.array([e.embedding for e in resp.data], dtype=np.float32)
+        all_vecs.append(vecs)
+        if pbar:
+            pbar.progress(min(1.0, (i+len(batch))/total))
+    arr = np.vstack(all_vecs)
     norms = np.linalg.norm(arr, axis=1, keepdims=True) + 1e-10
     return arr / norms
 
@@ -120,7 +125,7 @@ with tab2:
         if q and client:
             with st.spinner("Searching..."):
                 qv = embed_texts([q])[0]  # normalized single vector
-                idx, sims = cosine_top_k(qv, st.session_state.rag_state["doc_vectors"].T, k=top_k)
+                idx, sims = cosine_top_k(qv, st.session_state.rag_state["doc_vectors"], k=top_k)
                 context_parts = [st.session_state.rag_state["doc_chunks"][int(i)] for i in idx]
                 context = "\n\n---\n\n".join(context_parts)
 
