@@ -106,7 +106,7 @@ if "rag_state" not in st.session_state:
     }
 
 # ---------- UI ----------
-st.title("📄 Chat + PDF Q&A")
+st.title("🤖📄 Chat + PDF Q&A")
 st.caption(f"OpenAI key present: {bool(OPENAI_API_KEY)}")
 
 tab1, tab2 = st.tabs(["💬 Chat", "📚 Ask your PDF"])
