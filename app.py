@@ -6,8 +6,7 @@ from pypdf import PdfReader
 from openai import OpenAI
 from time import sleep
 
-st.set_page_config(page_title="🤖📄 MiniChatBot + PDF Q&A", page_icon="🤖")
-st.title("Mini Chatbot")
+st.set_page_config(page_title="MiniChatBot - AI Assistant + PDF Q&A", page_icon="🤖")
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY", "")
@@ -106,7 +105,8 @@ if "rag_state" not in st.session_state:
     }
 
 # ---------- UI ----------
-st.title("🤖📄 Chat + PDF Q&A")
+
+st.title("🤖 MiniChatBot")
 st.caption(f"OpenAI key present: {bool(OPENAI_API_KEY)}")
 
 tab1, tab2 = st.tabs(["💬 Chat", "📚 Ask your PDF"])
