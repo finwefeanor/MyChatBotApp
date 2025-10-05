@@ -1,28 +1,27 @@
 import os, io, traceback, json
 import numpy as np
 import streamlit as st
-import requests  # ← ADD THIS
+import requests
 from pypdf import PdfReader
 from openai import OpenAI
 from time import sleep
 
 st.set_page_config(page_title="📄 Chat + PDF Q&A", page_icon="📄")
-st.title("📄 Chat + PDF Q&A (minimal & robust)")
 
 # ---------- OpenAI client ----------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or st.secrets.get("OPENAI_API_KEY", "")
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-st.caption(f"OpenAI key present: {bool(OPENAI_API_KEY)}")
 
 # ---------- Helpers ----------
-def extract_pdf_text(file):
-    """Read a single uploaded PDF and return text."""
-    data = file.getvalue() if hasattr(file, "getvalue") else file.read()
-    reader = PdfReader(io.BytesIO(data))
-    pages = [p.extract_text() or "" for p in reader.pages]
-    # Optional cleanup for repeated headers/footers in your sample PDF:
-    text = "\n".join(pages).replace("Unity Programmer Task", "")
-    return text
+def extract_pdf_text(uploaded_files):
+    """Read uploaded PDFs and return combined text."""
+    full_texts = []
+    for file in uploaded_files:
+        data = file.getvalue() if hasattr(file, "getvalue") else file.read()
+        reader = PdfReader(io.BytesIO(data))
+        pages = [p.extract_text() or "" for p in reader.pages]
+        full_texts.append("\n".join(pages))
+    return "\n\n".join(full_texts)
 
 def chunk_text(text: str, chunk_chars=1000, overlap=200):
     """Split into overlapping character chunks (whitespace collapsed)."""
@@ -31,7 +30,7 @@ def chunk_text(text: str, chunk_chars=1000, overlap=200):
     while i < len(text):
         j = min(i + chunk_chars, len(text))
         chunks.append(text[i:j])
-        i = j - overlap  # ← FIXED: was max(0, j - overlap)
+        i = j - overlap
         if j >= len(text):
             break
     return chunks
@@ -64,7 +63,7 @@ def embed_texts(texts, batch=8, retries=3, timeout=30):
         }
         for attempt in range(retries):
             try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=timeout)  # ← CHANGED: use json= parameter
+                resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
                 if resp.status_code != 200:
                     st.error(f"Embeddings HTTP {resp.status_code}: {resp.text[:500]}")
                     raise RuntimeError(f"Embeddings HTTP {resp.status_code}")
@@ -88,7 +87,7 @@ def embed_texts(texts, batch=8, retries=3, timeout=30):
     norms = np.linalg.norm(arr, axis=1, keepdims=True) + 1e-10
     return arr / norms
 
-def cosine_top_k(query_vec, doc_matrix, k=4):
+def cosine_top_k(query_vec, doc_matrix, k=5):
     """Return indices + scores of the top-k most similar vectors."""
     sims = doc_matrix @ query_vec  # (n,d) @ (d,) -> (n,)
     k = int(min(max(1, k), sims.shape[0]))
@@ -96,125 +95,120 @@ def cosine_top_k(query_vec, doc_matrix, k=4):
     return idx, sims[idx]
 
 # ---------- Session state ----------
-if "rag" not in st.session_state:
-    st.session_state.rag = {"chunks": [], "vecs": None}
-
-# ========== Chat Section ==========
-st.subheader("💬 General Chat")
 if "chat_messages" not in st.session_state:
     st.session_state.chat_messages = []
 
-# Display previous messages
-for m in st.session_state.chat_messages:
-    st.chat_message(m["role"]).write(m["content"])
+if "rag_state" not in st.session_state:
+    st.session_state.rag_state = {
+        "doc_chunks": [],
+        "doc_vectors": None
+    }
 
-prompt = st.chat_input("Ask me anything...")
-if prompt:
-    st.session_state.chat_messages.append({"role": "user", "content": prompt})
-    st.chat_message("user").write(prompt)
+# ---------- UI ----------
+st.title("📄 Chat + PDF Q&A")
+st.caption(f"OpenAI key present: {bool(OPENAI_API_KEY)}")
 
-    if not client:  # ← CHANGED: was chat_client
-        st.error("No OPENAI_API_KEY found. Add it in Settings → Secrets.")
-    else:
-        try:
-            with st.spinner("Thinking..."):
-                resp = client.chat.completions.create(  # ← CHANGED: was chat_client
-                    model="gpt-4o-mini",
-                    messages=st.session_state.chat_messages,
-                )
-            reply = resp.choices[0].message.content
-            st.session_state.chat_messages.append({"role": "assistant", "content": reply})
-            st.chat_message("assistant").write(reply)
-        except Exception:
-            st.error("Chat failed:")
-            st.code(traceback.format_exc())
+tab1, tab2 = st.tabs(["💬 Chat", "📚 Ask your PDF"])
 
-st.divider()  # ← Add a visual separator
+# ====== Chat tab ======
+with tab1:
+    for m in st.session_state.chat_messages:
+        st.chat_message(m["role"]).write(m["content"])
 
-# ---------- UI: Upload & parse ----------
-st.subheader("1) Upload a PDF")
-up = st.file_uploader("Upload a PDF", type=["pdf"])
+    prompt = st.chat_input("Ask me anything...")
+    if prompt:
+        st.session_state.chat_messages.append({"role": "user", "content": prompt})
+        st.chat_message("user").write(prompt)
 
-if up and st.button("Parse PDF (preview)"):
-    try:
-        text = extract_pdf_text(up)
-        if not text.strip():
-            st.error("No text extracted (scanned PDF?).")
+        if not client:
+            st.error("No OPENAI_API_KEY found. Add it in Settings → Secrets.")
         else:
-            st.success("PDF parsed.")
-            st.write(text[:1000] + ("…" if len(text) > 1000 else ""))
-    except Exception:
-        st.error("Parsing failed:")
-        st.code(traceback.format_exc())
+            try:
+                with st.spinner("Thinking..."):
+                    resp = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=st.session_state.chat_messages,
+                    )
+                reply = resp.choices[0].message.content
+                st.session_state.chat_messages.append({"role": "assistant", "content": reply})
+                st.chat_message("assistant").write(reply)
+            except Exception:
+                st.error("Chat failed:")
+                st.code(traceback.format_exc())
 
-# ---------- UI: Build index ----------
-st.subheader("2) Build index (chunk + embed)")
-colA, colB, colC = st.columns(3)
-with colA:
-    chunk_chars = st.slider("Chunk size (chars)", 500, 4000, 1000, 100)
-with colB:
-    overlap = st.slider("Overlap (chars)", 0, 1000, 200, 50)
-with colC:
-    max_chunks = st.number_input("Max chunks (testing)", 10, 500, 60, 10)
+# ====== PDF Q&A tab ======
+with tab2:
+    st.write("Upload a PDF (or a few), then ask questions. I'll search the document and answer using the most relevant parts.")
+    
+    uploaded = st.file_uploader("Upload PDF(s)", type=["pdf"], accept_multiple_files=True)
+    
+    colA, colB = st.columns(2)
+    with colA:
+        chunk_chars = st.slider("Chunk size (chars)", 500, 2000, 1000, 100)
+    with colB:
+        top_k = st.slider("Top-K chunks", 2, 10, 5)
 
-if up and client and st.button("Build index"):
-    try:
-        text = extract_pdf_text(up)
-        chunks = chunk_text(text, chunk_chars=chunk_chars, overlap=overlap)
-        chunks = chunks[:max_chunks]  # ← FIXED: use the max_chunks parameter
-        st.write(f"Prepared {len(chunks)} chunks.")
+    if uploaded and client:
+        if st.button("Build index"):
+            try:
+                with st.spinner("Reading & embedding..."):
+                    text = extract_pdf_text(uploaded)
+                    chunks = chunk_text(text, chunk_chars=chunk_chars, overlap=200)
+                    
+                    # Limit to prevent accidental huge PDFs
+                    max_chunks = 1200
+                    if len(chunks) > max_chunks:
+                        chunks = chunks[:max_chunks]
+                        st.warning(f"Too large; using first {max_chunks} chunks.")
+                    
+                    vecs = embed_texts(chunks, batch=8)
+                    st.session_state.rag_state["doc_chunks"] = chunks
+                    st.session_state.rag_state["doc_vectors"] = vecs
+                    st.success(f"Indexed {len(chunks)} chunks.")
+            except Exception:
+                st.error("Failed to build index:")
+                st.code(traceback.format_exc())
 
-        st.info("Embedding now…")
-        vecs = embed_texts(chunks, batch=8)   # ← FIXED: was embed_texts_py
-        st.session_state.rag["chunks"] = chunks
-        st.session_state.rag["vecs"] = vecs
-        st.success(f"Embeddings OK. Shape: {vecs.shape}")
+    elif uploaded and not client:
+        st.error("No OPENAI_API_KEY set. Add it to secrets to build the index.")
 
-    except Exception as e:
-        st.error("Exception while building index:")
-        st.code(traceback.format_exc())
+    # Query section
+    if st.session_state.rag_state["doc_chunks"] and st.session_state.rag_state["doc_vectors"] is not None:
+        q = st.text_input("Your question about the PDF(s)")
+        if q and client:
+            try:
+                with st.spinner("Searching..."):
+                    qv = embed_texts([q])[0]  # normalized single vector
+                    idx, sims = cosine_top_k(qv, st.session_state.rag_state["doc_vectors"], k=top_k)
+                    context_parts = [st.session_state.rag_state["doc_chunks"][int(i)] for i in idx]
+                    context = "\n\n---\n\n".join(context_parts)
 
-elif up and not client:
-    st.warning("OPENAI_API_KEY is missing in Settings → Secrets.")
+                sys_prompt = (
+                    "You are a helpful assistant. Answer the user's question strictly using the provided document context. "
+                    "If the answer is not in the context, say you don't see it in the document."
+                )
+                user_prompt = (
+                    f"Question:\n{q}\n\n"
+                    f"Document context (may be partial):\n{context}\n\n"
+                    "Answer clearly and cite key phrases from the context when possible."
+                )
 
-# ---------- UI: Ask ----------
-st.subheader("3) Ask your PDF")
-q = st.text_input("Your question")
-top_k = st.slider("Top-K retrieved chunks", 1, 10, 4)
-
-if q and client and st.session_state.rag["vecs"] is not None:
-    try:
-        with st.spinner("Retrieving relevant chunks…"):
-            qv = embed_texts([q])[0]  # (d,)
-            idx, sims = cosine_top_k(qv, st.session_state.rag["vecs"], k=top_k)
-            parts = [st.session_state.rag["chunks"][int(i)] for i in idx]
-            context = "\n\n---\n\n".join(parts)
-
-        sys_prompt = (
-            "You are a helpful assistant. Answer the user's question strictly using the provided document context. "
-            "If the answer is not in the context, say you don't see it in the document."
-        )
-        user_prompt = (
-            f"Question:\n{q}\n\n"
-            f"Document context (may be partial):\n{context}\n\n"
-            "Answer clearly and cite key phrases from the context when possible."
-        )
-
-        with st.spinner("Generating answer…"):
-            resp = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
-        st.markdown("### Answer")
-        st.write(resp.choices[0].message.content)
-
-        with st.expander("Show retrieved chunks"):
-            for i, (ii, sim) in enumerate(zip(idx, sims), 1):
-                st.markdown(f"**Chunk {i} (score {float(sim):.3f})**")
-                st.write(st.session_state.rag["chunks"][int(ii)])
-    except Exception:
-        st.error("Search/answer failed:")
-        st.code(traceback.format_exc())
+                with st.spinner("Answering..."):
+                    resp = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": sys_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                    )
+                
+                st.markdown("### Answer")
+                st.write(resp.choices[0].message.content)
+                
+                with st.expander("Show retrieved chunks"):
+                    for i, (ii, sim) in enumerate(zip(idx, sims), 1):
+                        st.markdown(f"**Chunk {i} (score {float(sim):.3f})**")
+                        st.write(st.session_state.rag_state["doc_chunks"][int(ii)])
+            except Exception:
+                st.error("Search/answer failed:")
+                st.code(traceback.format_exc())
