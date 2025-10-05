@@ -99,6 +99,38 @@ def cosine_top_k(query_vec, doc_matrix, k=4):
 if "rag" not in st.session_state:
     st.session_state.rag = {"chunks": [], "vecs": None}
 
+# ========== Chat Section ==========
+st.subheader("💬 General Chat")
+if "chat_messages" not in st.session_state:
+    st.session_state.chat_messages = []
+
+# Display previous messages
+for m in st.session_state.chat_messages:
+    st.chat_message(m["role"]).write(m["content"])
+
+prompt = st.chat_input("Ask me anything...")
+if prompt:
+    st.session_state.chat_messages.append({"role": "user", "content": prompt})
+    st.chat_message("user").write(prompt)
+
+    if not client:  # ← CHANGED: was chat_client
+        st.error("No OPENAI_API_KEY found. Add it in Settings → Secrets.")
+    else:
+        try:
+            with st.spinner("Thinking..."):
+                resp = client.chat.completions.create(  # ← CHANGED: was chat_client
+                    model="gpt-4o-mini",
+                    messages=st.session_state.chat_messages,
+                )
+            reply = resp.choices[0].message.content
+            st.session_state.chat_messages.append({"role": "assistant", "content": reply})
+            st.chat_message("assistant").write(reply)
+        except Exception:
+            st.error("Chat failed:")
+            st.code(traceback.format_exc())
+
+st.divider()  # ← Add a visual separator
+
 # ---------- UI: Upload & parse ----------
 st.subheader("1) Upload a PDF")
 up = st.file_uploader("Upload a PDF", type=["pdf"])
