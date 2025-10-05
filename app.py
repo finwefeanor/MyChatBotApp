@@ -124,22 +124,19 @@ with colC:
 if up and client and st.button("Build index"):
     try:
         text = extract_pdf_text(up)
-        if not text.strip():
-            st.error("No text extracted; cannot index.")
-        else:
-            st.info("Splitting into chunks…")
-            chunks = chunk_text(text, chunk_chars=chunk_chars, overlap=overlap)
-            st.write(f"Total chunks: **{len(chunks)}**")
-            if len(chunks) > max_chunks:
-                chunks = chunks[:max_chunks]
-                st.warning(f"Index limited to first {max_chunks} chunks for stability.")
-            st.info("Embedding chunks…")
-            vecs = embed_texts(chunks)  # (n,d)
-            st.session_state.rag["chunks"] = chunks
-            st.session_state.rag["vecs"] = vecs
-            st.success(f"Indexed {len(chunks)} chunks. Embeddings shape: {vecs.shape}")
-    except Exception:
-        st.error("Indexing failed:")
+        chunks = chunk_text(text, chunk_chars=chunk_chars, overlap=overlap)
+        chunks = chunks[:24]  # keep small for testing
+        st.write(f"Prepared {len(chunks)} chunks.")
+
+        st.info("Embedding now…")
+        vecs = embed_texts_py(chunks, batch=8)   # or your embed_texts function
+        st.session_state.rag["chunks"] = chunks
+        st.session_state.rag["vecs"] = vecs
+        st.success(f"Embeddings OK. Shape: {len(vecs)}")
+
+    except Exception as e:
+        import traceback
+        st.error("Exception while building index:")
         st.code(traceback.format_exc())
 
 elif up and not client:
